@@ -581,14 +581,43 @@ async function checkVersionFreshness(): Promise<HealthCheck> {
  *   - plugins/ruflo-metaharness/skills/harness-drift-from-history/SKILL.md  (iter 53)
  */
 async function checkMetaharnessIntegration(): Promise<HealthCheck> {
-  // Locate plugins dir using the same upward-walk pattern as
-  // metaharness-tools.ts::locatePluginScripts() and commands/metaharness.ts
+  // Locate plugins dir.
+  //
+  // Pre-#2437 fix this only walked up from `process.cwd()` + checked one
+  // hard-coded `<cwd>/node_modules/@claude-flow/cli/...` candidate. That
+  // missed the two cases users actually run from:
+  //   (a) `npx @claude-flow/cli@<tag>` → resolves to a per-version cache
+  //       under `~/.npm/_npx/<hash>/node_modules/@claude-flow/cli/...`
+  //   (b) `npm install -g @claude-flow/cli` → lives at
+  //       `$(npm prefix -g)/lib/node_modules/@claude-flow/cli/...`
+  //
+  // The bulletproof fix: resolve relative to THIS file's own location via
+  // `import.meta.url`. The plugins dir is always a sibling of the package
+  // root regardless of where the package was installed. Walk up from
+  // `dist/src/commands/doctor.js` (built) or `src/commands/doctor.ts`
+  // (dev) until we find a directory containing `plugins/ruflo-metaharness/`.
   const candidates: string[] = [];
+
+  // Strategy 1: walk up from this module's own URL — covers npx + global install.
+  try {
+    const selfDir = dirname(fileURLToPath(import.meta.url));
+    let q = selfDir;
+    for (let i = 0; i < 8; i++) {
+      candidates.push(join(q, 'plugins', 'ruflo-metaharness'));
+      q = dirname(q);
+    }
+  } catch {
+    // import.meta.url unavailable under some bundlers — fall through to cwd walk.
+  }
+
+  // Strategy 2: walk up from cwd — covers monorepo dev (running from a sub-package).
   let p = process.cwd();
   for (let i = 0; i < 8; i++) {
     candidates.push(join(p, 'plugins', 'ruflo-metaharness'));
     p = dirname(p);
   }
+
+  // Strategy 3: explicit node_modules path relative to cwd — covers project-local install.
   candidates.push(join(process.cwd(), 'node_modules', '@claude-flow', 'cli', 'plugins', 'ruflo-metaharness'));
 
   let pluginDir: string | null = null;
@@ -600,15 +629,21 @@ async function checkMetaharnessIntegration(): Promise<HealthCheck> {
   }
 
   if (!pluginDir) {
+    // #2437: MetaHarness is documented as an optional dependency in
+    // optionalDependencies (per ADR-150 architectural constraint #2 —
+    // "Optional in package.json"). A genuinely-absent plugin therefore
+    // warrants WARN, not FAIL — same posture as the runtime path which
+    // returns {degraded: true, exit 0}. FAIL is reserved for misconfigured
+    // installs where the plugin SHOULD be present but is broken.
     return {
       name: 'MetaHarness integration (ADR-150)',
-      status: 'fail',
-      message: 'plugins/ruflo-metaharness/ not found in expected locations',
-      fix: 'Reinstall ruflo: `npm i -g ruflo@latest`',
+      status: 'warn',
+      message: 'plugins/ruflo-metaharness/ not found — MetaHarness skills will degrade gracefully',
+      fix: 'Optional: install via `npm i -D @metaharness/darwin metaharness` or run `ruflo plugins install ruflo-metaharness`',
     };
   }
 
-  // Required files (iter 36+44 surfaces)
+  // Required files (iter 36+44 surfaces, +ADR-153 darwin surfaces in v3.13.0)
   const required = [
     'scripts/_harness.mjs',
     'scripts/_similarity.mjs',
@@ -618,6 +653,14 @@ async function checkMetaharnessIntegration(): Promise<HealthCheck> {
     'scripts/drift-from-history.mjs',
     'skills/harness-similarity/SKILL.md',
     'skills/harness-drift-from-history/SKILL.md',
+    // ADR-153 Darwin Mode surfaces (v3.13.0) — added to gate against silent deletion
+    'scripts/_darwin.mjs',
+    'scripts/evolve.mjs',
+    'scripts/security-bench.mjs',
+    'scripts/bench.mjs',
+    'skills/harness-evolve/SKILL.md',
+    'skills/harness-security-bench/SKILL.md',
+    'skills/harness-bench/SKILL.md',
   ];
   const missing = required.filter((f) => !existsSync(join(pluginDir, f)));
   if (missing.length > 0) {
