@@ -107,6 +107,14 @@ export interface DaemonConfig {
   // shutdown if no worker has run within this window (0 disables).
   ttlMs: number;
   idleShutdownMs: number;
+  // #2661 — explicit consent gate for scheduled AI workers. When false
+  // (the default), NO worker is ever promoted to headless `claude --print`
+  // execution, regardless of whether the Claude CLI is on PATH. Merely
+  // finding `claude` must not authorize recurring model calls: a default
+  // install produces zero autonomous Claude launches. Enable via
+  // `daemon start --headless`, `daemon.aiWorkers.enabled: true` in
+  // .claude-flow/config.json, or RUFLO_DAEMON_AI_WORKERS=1.
+  aiWorkersEnabled: boolean;
   workers: WorkerConfig[];
 }
 
@@ -261,6 +269,12 @@ export class WorkerDaemon extends EventEmitter {
       // env-or-default and honors an explicit 0 (disable).
       ttlMs: config?.ttlMs ?? fileConfig.ttlMs ?? readEnvSecsAsMs('RUFLO_DAEMON_TTL_SECS', DEFAULT_DAEMON_TTL_MS),
       idleShutdownMs: config?.idleShutdownMs ?? fileConfig.idleShutdownMs ?? readEnvSecsAsMs('RUFLO_DAEMON_IDLE_SECS', DEFAULT_DAEMON_IDLE_SHUTDOWN_MS),
+      // #2661 — AI workers are opt-in: flag > config.json > env > OFF.
+      // Deliberately NOT restored from daemon-state.json (initializeWorkerStates
+      // whitelist) so a stale state file can never resurrect consent.
+      aiWorkersEnabled: config?.aiWorkersEnabled
+        ?? fileConfig.aiWorkersEnabled
+        ?? (process.env.RUFLO_DAEMON_AI_WORKERS === '1'),
       workers: config?.workers ?? DEFAULT_WORKERS,
     };
 
@@ -295,6 +309,17 @@ export class WorkerDaemon extends EventEmitter {
    * Initialize headless executor if Claude Code is available
    */
   private async initHeadlessExecutor(): Promise<void> {
+    // #2661 — scheduled AI workers require explicit consent. Without it,
+    // don't even probe `claude --version`: headlessAvailable stays false,
+    // every worker runs its $0 local path, and a default install produces
+    // zero autonomous Claude launches regardless of worktree count.
+    if (!this.config.aiWorkersEnabled) {
+      this.log(
+        'info',
+        'AI workers disabled (default) - all workers run local-only. Enable with `daemon start --headless`, daemon.aiWorkers.enabled=true, or RUFLO_DAEMON_AI_WORKERS=1 (#2661)'
+      );
+      return;
+    }
     try {
       this.headlessExecutor = new HeadlessWorkerExecutor(this.projectRoot, {
         maxConcurrent: this.config.maxConcurrent,
@@ -415,6 +440,7 @@ export class WorkerDaemon extends EventEmitter {
     minFreeMemoryPercent?: number;
     ttlMs?: number;
     idleShutdownMs?: number;
+    aiWorkersEnabled?: boolean;
   } {
     const jsonPath = join(claudeFlowDir, 'config.json');
     const yamlPath = join(claudeFlowDir, 'config.yaml');
@@ -470,6 +496,8 @@ export class WorkerDaemon extends EventEmitter {
       // and env var; stored internally as ms. An explicit 0 disables.
       const rawTtl = cfg['daemon.ttlSecs'] ?? raw['daemon.ttlSecs'];
       const rawIdle = cfg['daemon.idleSecs'] ?? raw['daemon.idleSecs'];
+      // #2661 — explicit opt-in for scheduled AI workers.
+      const rawAiEnabled = cfg['daemon.aiWorkers.enabled'] ?? raw['daemon.aiWorkers.enabled'];
       return {
         autoStart: typeof raw['daemon.autoStart'] === 'boolean' ? raw['daemon.autoStart'] : undefined,
         maxConcurrent: (typeof rawMaxConcurrent === 'number' && rawMaxConcurrent > 0) ? rawMaxConcurrent : undefined,
@@ -478,6 +506,7 @@ export class WorkerDaemon extends EventEmitter {
         minFreeMemoryPercent: (typeof rawMinMem === 'number' && rawMinMem >= 0 && rawMinMem <= 100) ? rawMinMem : undefined,
         ttlMs: (typeof rawTtl === 'number' && rawTtl >= 0) ? rawTtl * 1000 : undefined,
         idleShutdownMs: (typeof rawIdle === 'number' && rawIdle >= 0) ? rawIdle * 1000 : undefined,
+        aiWorkersEnabled: typeof rawAiEnabled === 'boolean' ? rawAiEnabled : undefined,
       };
     } catch {
       return {};
@@ -965,6 +994,14 @@ export class WorkerDaemon extends EventEmitter {
       this.lifecycleTimer = undefined;
     }
 
+    // #2661 — reap in-flight headless `claude --print` children. They run
+    // detached (own process group on POSIX) and would otherwise outlive the
+    // daemon; `daemon stop --all` relies on SIGTERM → this path to cancel
+    // active Claude process groups.
+    if (this.headlessExecutor) {
+      try { this.headlessExecutor.cancelAll(); } catch { /* best-effort */ }
+    }
+
     this.running = false;
     this.removePidFile();
     this.saveState();
@@ -985,35 +1022,59 @@ export class WorkerDaemon extends EventEmitter {
   private startLifecycleMonitor(): void {
     const ttlMs = this.config.ttlMs;
     const idleMs = this.config.idleShutdownMs;
-    if ((!ttlMs || ttlMs <= 0) && (!idleMs || idleMs <= 0)) {
-      return; // both limits disabled — preserve legacy run-until-stopped behavior
-    }
+    // #2661 — unlike ttl/idle (both optional), the workspace-removal check
+    // always runs, so the monitor is no longer skipped when both limits are
+    // disabled. A daemon whose worktree was deleted must not keep running.
 
     const CHECK_INTERVAL_MS = 60_000;
     this.lifecycleTimer = setInterval(() => {
       if (!this.running) return;
-      const now = Date.now();
-      const startedMs = this.startedAt?.getTime() ?? now;
-
-      if (ttlMs > 0 && now - startedMs >= ttlMs) {
-        void this.selfShutdown(`max age ${Math.round(ttlMs / 1000)}s reached`);
-        return;
-      }
-      if (idleMs > 0) {
-        const lastActivity = this.lastWorkerActivityMs() ?? startedMs;
-        if (now - lastActivity >= idleMs) {
-          void this.selfShutdown(`idle for ${Math.round(idleMs / 1000)}s (no worker activity)`);
-        }
+      const reason = this.lifecycleShutdownReason(Date.now());
+      if (reason) {
+        void this.selfShutdown(reason);
       }
     }, CHECK_INTERVAL_MS);
     if (typeof this.lifecycleTimer.unref === 'function') {
       this.lifecycleTimer.unref();
     }
 
-    const parts: string[] = [];
+    const parts: string[] = ['workspace-removal'];
     if (ttlMs > 0) parts.push(`ttl=${Math.round(ttlMs / 1000)}s`);
     if (idleMs > 0) parts.push(`idle=${Math.round(idleMs / 1000)}s`);
     this.log('info', `Lifecycle monitor active (${parts.join(', ')})`);
+  }
+
+  /**
+   * Decide whether the daemon should self-shutdown, and why. Extracted from
+   * the lifecycle timer so it is testable without racing a 60s interval or
+   * calling process.exit().
+   *
+   * #2661 (invariant 6, containment form): a removed worktree makes its
+   * daemon ineligible within one check interval — the daemon detects that
+   * its workspace directory is gone and shuts down instead of continuing to
+   * schedule jobs against a deleted tree. The full lease architecture
+   * (supervisor-dispatched jobs, heartbeats) is follow-up work; this stops
+   * the leak where recreated/removed worktrees leave schedulers behind.
+   */
+  private lifecycleShutdownReason(now: number): string | null {
+    if (!existsSync(this.projectRoot)) {
+      return 'workspace directory removed (#2661)';
+    }
+
+    const ttlMs = this.config.ttlMs;
+    const idleMs = this.config.idleShutdownMs;
+    const startedMs = this.startedAt?.getTime() ?? now;
+
+    if (ttlMs > 0 && now - startedMs >= ttlMs) {
+      return `max age ${Math.round(ttlMs / 1000)}s reached`;
+    }
+    if (idleMs > 0) {
+      const lastActivity = this.lastWorkerActivityMs() ?? startedMs;
+      if (now - lastActivity >= idleMs) {
+        return `idle for ${Math.round(idleMs / 1000)}s (no worker activity)`;
+      }
+    }
+    return null;
   }
 
   /**
@@ -1256,8 +1317,11 @@ export class WorkerDaemon extends EventEmitter {
    * Run the actual worker logic
    */
   private async runWorkerLogic(workerConfig: WorkerConfig): Promise<unknown> {
-    // Check if this is a headless worker type and headless execution is available
-    if (isHeadlessWorker(workerConfig.type) && this.headlessAvailable && this.headlessExecutor) {
+    // Check if this is a headless worker type and headless execution is available.
+    // #2661 — aiWorkersEnabled is re-checked here (not just at init) as
+    // defence in depth: no code path may promote a worker to `claude --print`
+    // without explicit consent.
+    if (this.config.aiWorkersEnabled && isHeadlessWorker(workerConfig.type) && this.headlessAvailable && this.headlessExecutor) {
       try {
         this.log('info', `Running ${workerConfig.type} in headless mode (Claude Code AI)`);
         const result = await this.headlessExecutor.execute(workerConfig.type as HeadlessWorkerType);
@@ -1281,6 +1345,17 @@ export class WorkerDaemon extends EventEmitter {
             error: String(reason).slice(0, 500),
           });
           // Fall through to local switch.
+        } else if (result.dedupSkipped) {
+          // #2661 invariant 5 — the same job (repositoryId + HEAD + worker +
+          // config) already succeeded within the freshness window, e.g. in a
+          // sibling worktree. No model call happened; do NOT overwrite the
+          // persisted metrics (which hold the real prior result) and do NOT
+          // fall back to local — the work is already done.
+          this.log('info', `Worker ${workerConfig.type} dedup-skipped (same repo+HEAD job ran recently in another worktree)`);
+          return {
+            mode: 'headless-dedup-skip',
+            ...result,
+          };
         } else {
           // #1793: persist the headless result to the same metrics files the
           // local workers write to. Without this, AI-mode runs produced rich
