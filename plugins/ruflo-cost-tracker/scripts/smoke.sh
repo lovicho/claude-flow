@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Structural smoke test for ruflo-cost-tracker v0.3.0 (ADR-0001 + ADR-0002).
+# Structural smoke test for ruflo-cost-tracker v0.26.1.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0
