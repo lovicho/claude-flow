@@ -124,17 +124,27 @@ function releaseStartLock(fd: number | null): void {
  * straight through to the terminal; signals (Ctrl+C) propagate naturally to
  * the child, no manual forwarding needed.
  */
-export async function startForeground(): Promise<never> {
+export async function startForeground(supervised = false): Promise<never> {
   const bin = requireBinary();
   const status = getProxyStatus();
-  if (status.running && status.pid) throw new ProxyAlreadyRunningError(status.pid);
+  // In service mode startBackground has already written this supervisor's
+  // PID. Treating it as a competing proxy makes the supervisor immediately
+  // exit before it can spawn meta-proxy.
+  if (!supervised && status.running && status.pid) throw new ProxyAlreadyRunningError(status.pid);
   if (status.stalePidFile) clearStalePidFile();
 
   const child = spawn(bin, [], { stdio: 'inherit', windowsHide: false });
-  if (child.pid) writePidFile(child.pid);
+  if (!supervised && child.pid) writePidFile(child.pid);
 
   const cleanup = () => clearStalePidFile();
   process.on('exit', cleanup);
+  if (supervised) {
+    const forwardSignal = (signal: NodeJS.Signals) => {
+      if (!child.killed) child.kill(signal);
+    };
+    process.once('SIGTERM', () => forwardSignal('SIGTERM'));
+    process.once('SIGINT', () => forwardSignal('SIGINT'));
+  }
 
   await new Promise<void>((resolve) => {
     child.on('exit', () => {

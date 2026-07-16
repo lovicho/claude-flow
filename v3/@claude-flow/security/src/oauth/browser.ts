@@ -36,22 +36,23 @@ function assertSafeUrl(url: string): void {
 export function openBrowser(url: string): Promise<void> {
   assertSafeUrl(url);
 
-  let cmd: string;
-  let args: string[];
-  if (process.platform === 'darwin') {
-    cmd = 'open';
-    args = [url];
-  } else if (process.platform === 'win32') {
-    // `cmd /c start "" <url>` — the empty title arg avoids `start` treating a
-    // quoted URL as the window title.
-    cmd = 'cmd';
-    args = ['/c', 'start', '', url];
-  } else {
-    cmd = 'xdg-open';
-    args = [url];
-  }
+  const { cmd, args } = browserCommand(url);
 
   return new Promise((resolve) => {
     execFile(cmd, args, { shell: false, windowsHide: true }, () => resolve());
   });
+}
+
+/** Pure command selection, exported for platform regression tests. */
+export function browserCommand(url: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } {
+  assertSafeUrl(url);
+  if (platform === 'darwin') {
+    return { cmd: 'open', args: [url] };
+  } else if (platform === 'win32') {
+    // cmd.exe treats OAuth query-string `&` separators as command operators,
+    // truncating the URL before client_id. Use the URL handler without a shell.
+    return { cmd: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] };
+  } else {
+    return { cmd: 'xdg-open', args: [url] };
+  }
 }

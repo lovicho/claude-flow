@@ -152,7 +152,7 @@ const superviseSub: Command = {
   description: 'Internal detached supervisor for token refresh and meta-proxy lifecycle',
   action: async (): Promise<CommandResult> => {
     await startTokenRefreshPump();
-    await startForeground();
+    await startForeground(true);
     return { success: true };
   },
 };
