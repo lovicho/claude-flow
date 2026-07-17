@@ -87,7 +87,7 @@ describe('security scan — result persistence (statusline CVE counter wiring)',
       );
     }
     const scanDir = join(scanTarget, '.claude', 'security-scans');
-    const files = require('fs').readdirSync(scanDir).filter((f: string) => f.endsWith('.json'));
+    const files = readdirSync(scanDir).filter((f: string) => f.endsWith('.json'));
     expect(files).toEqual(['scan-deps-quick.json']);
-  });
+  }, 20_000);
 });

@@ -211,10 +211,10 @@ function getSecurityStatus() {
   // real findings count. Previously hardcoded totalCves=3 and counted scan
   // *files* as "CVEs fixed", fabricating "⚠ 3 CVEs" for every project.
   const scanResultsPath = path.join(process.cwd(), '.claude', 'security-scans');
-  if (!fs.existsSync(scanResultsPath)) return { status: 'PENDING', cvesFixed: 0, totalCves: 0 };
+  if (!fs.existsSync(scanResultsPath)) return { status: 'PENDING', findings: 0, cvesFixed: 0, totalCves: 0 };
   try {
     const files = fs.readdirSync(scanResultsPath).filter(f => f.endsWith('.json'));
-    if (files.length === 0) return { status: 'PENDING', cvesFixed: 0, totalCves: 0 };
+    if (files.length === 0) return { status: 'PENDING', findings: 0, cvesFixed: 0, totalCves: 0 };
     let newest = files[0];
     let newestMtime = -1;
     for (const f of files) {
@@ -222,11 +222,11 @@ function getSecurityStatus() {
       if (st.mtimeMs > newestMtime) { newestMtime = st.mtimeMs; newest = f; }
     }
     const scan = JSON.parse(fs.readFileSync(path.join(scanResultsPath, newest), 'utf-8'));
-    const totalCves = scan.summary?.total ?? scan.totalFindings ?? scan.findings?.length ?? 0;
-    const status = totalCves > 0 ? 'IN_PROGRESS' : 'CLEAN';
-    return { status, cvesFixed: 0, totalCves };
+    const findings = Math.max(0, scan.summary?.total ?? scan.totalFindings ?? scan.findings?.length ?? 0);
+    const status = findings > 0 ? 'ISSUES' : 'CLEAN';
+    return { status, findings, scannedAt: scan.timestamp, cvesFixed: 0, totalCves: 0 };
   } catch (e) {
-    return { status: 'PENDING', cvesFixed: 0, totalCves: 0 };
+    return { status: 'PENDING', findings: 0, cvesFixed: 0, totalCves: 0 };
   }
 }
 
@@ -352,7 +352,7 @@ function generateStatusline() {
   lines.push(
     `${c.brightYellow}🤖 Swarm${c.reset}  ${swarmIndicator} [${agentsColor}${String(swarm.activeAgents).padStart(2)}${c.reset}/${c.brightWhite}${swarm.maxAgents}${c.reset}]  ` +
     `${c.brightPurple}👥 ${system.subAgents}${c.reset}    ` +
-    `${securityIcon} ${securityColor}CVE ${security.cvesFixed}${c.reset}/${c.brightWhite}${security.totalCves}${c.reset}    ` +
+    `${securityIcon} ${securityColor}Findings ${security.findings || 0}${c.reset}    ` +
     `${c.brightCyan}💾 ${system.memoryMB}MB${c.reset}    ` +
     `${c.brightGreen}📂 ${String(system.contextPct).padStart(3)}%${c.reset}    ` +
     `${c.dim}🧠 ${String(system.intelligencePct).padStart(3)}%${c.reset}`
@@ -409,7 +409,7 @@ function generateSingleLine() {
   return `${c.brightPurple}CF-V3${c.reset} ${c.dim}|${c.reset} ` +
     `${c.cyan}D:${progress.domainsCompleted}/${progress.totalDomains}${c.reset} ${c.dim}|${c.reset} ` +
     `${c.yellow}S:${swarmIndicator}${swarm.activeAgents}/${swarm.maxAgents}${c.reset} ${c.dim}|${c.reset} ` +
-    `${security.status === 'CLEAN' ? c.green : c.red}CVE:${securityStatus}${security.cvesFixed}/${security.totalCves}${c.reset} ${c.dim}|${c.reset} ` +
+    `${security.status === 'CLEAN' ? c.green : c.red}Findings:${security.findings || 0}${c.reset} ${c.dim}|${c.reset} ` +
     `${c.dim}🧠${system.intelligencePct}%${c.reset}`;
 }
 
@@ -461,7 +461,7 @@ function generateSafeStatusline() {
     `${c.brightYellow}🤖${c.reset}                        ` +  // 24 spaces padding
     `${swarmIndicator} [${agentsColor}${String(swarm.activeAgents).padStart(2)}${c.reset}/${c.brightWhite}${swarm.maxAgents}${c.reset}]  ` +
     `${c.brightPurple}👥 ${system.subAgents}${c.reset}  ` +
-    `${securityIcon} ${securityColor}CVE ${security.cvesFixed}${c.reset}/${c.brightWhite}${security.totalCves}${c.reset}  ` +
+    `${securityIcon} ${securityColor}Findings ${security.findings || 0}${c.reset}  ` +
     `${c.brightCyan}💾 ${system.memoryMB}MB${c.reset}  ` +
     `${c.dim}🧠 ${system.intelligencePct}%${c.reset}`
   );

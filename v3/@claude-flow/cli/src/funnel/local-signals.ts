@@ -12,21 +12,25 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 
 export interface SecurityStatus {
-  status: 'CLEAN' | 'IN_PROGRESS' | 'PENDING';
+  status: 'CLEAN' | 'ISSUES' | 'PENDING';
+  /** Generic code-pattern findings from `ruflo security scan` (not CVEs). */
+  findings: number;
+  scannedAt?: string;
+  /** @deprecated Retained as a zero-valued compatibility field. */
   cvesFixed: number;
+  /** @deprecated Retained as a zero-valued compatibility field. */
   totalCves: number;
 }
 
 export function getSecurityStatus(cwd: string = process.cwd()): SecurityStatus {
-  // ponytail: read the NEWEST scan in .claude/security-scans/ and surface its
-  // real findings count. Previously this hardcoded totalCves=3 and counted
-  // scan *files* as "CVEs fixed", fabricating "⚠ 3 CVEs" for every project.
-  // cvesFixed stays 0 — no mechanism tracks actual fixes yet.
+  const empty: SecurityStatus = {
+    status: 'PENDING', findings: 0, cvesFixed: 0, totalCves: 0,
+  };
   const scanResultsPath = path.join(cwd, '.claude', 'security-scans');
-  if (!fs.existsSync(scanResultsPath)) return { status: 'PENDING', cvesFixed: 0, totalCves: 0 };
+  if (!fs.existsSync(scanResultsPath)) return empty;
   try {
     const files = fs.readdirSync(scanResultsPath).filter((f: string) => f.endsWith('.json'));
-    if (files.length === 0) return { status: 'PENDING', cvesFixed: 0, totalCves: 0 };
+    if (files.length === 0) return empty;
     let newest = files[0];
     let newestMtime = -1;
     for (const f of files) {
@@ -34,12 +38,18 @@ export function getSecurityStatus(cwd: string = process.cwd()): SecurityStatus {
       if (st.mtimeMs > newestMtime) { newestMtime = st.mtimeMs; newest = f; }
     }
     const scan = JSON.parse(fs.readFileSync(path.join(scanResultsPath, newest), 'utf-8'));
-    const totalCves: number =
+    const rawFindings: number =
       scan.summary?.total ?? scan.totalFindings ?? scan.findings?.length ?? 0;
-    const status: SecurityStatus['status'] = totalCves > 0 ? 'IN_PROGRESS' : 'CLEAN';
-    return { status, cvesFixed: 0, totalCves };
+    const findings = Math.max(0, Number.isFinite(rawFindings) ? rawFindings : 0);
+    return {
+      status: findings > 0 ? 'ISSUES' : 'CLEAN',
+      findings,
+      scannedAt: typeof scan.timestamp === 'string' ? scan.timestamp : undefined,
+      cvesFixed: 0,
+      totalCves: 0,
+    };
   } catch {
-    return { status: 'PENDING', cvesFixed: 0, totalCves: 0 };
+    return empty;
   }
 }
 

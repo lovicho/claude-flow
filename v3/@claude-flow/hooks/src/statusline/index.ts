@@ -210,7 +210,9 @@ export class StatuslineGenerator {
     lines.push(
       `${c.brightYellow}🤖 Swarm${c.reset}  ${swarmIndicator} [${agentsColor}${agentDisplay}${c.reset}/${c.brightWhite}${data.swarm.maxAgents}${c.reset}]  ` +
       `${subAgentColor}👥 ${data.system.subAgents}${c.reset}    ` +
-      `${securityIcon} ${securityColor}CVE ${data.security.cvesFixed}${c.reset}/${c.brightWhite}${data.security.totalCves}${c.reset}    ` +
+      (data.security.findings !== undefined
+        ? `${securityIcon} ${securityColor}Findings ${data.security.findings}${c.reset}    `
+        : `${securityIcon} ${securityColor}CVE ${data.security.cvesFixed}${c.reset}/${c.brightWhite}${data.security.totalCves}${c.reset}    `) +
       `${memoryColor}💾 ${memoryDisplay}${c.reset}    ` +
       `${contextColor}📂 ${contextDisplay}%${c.reset}    ` +
       `${intelColor}🧠 ${intelDisplay}%${c.reset}`
@@ -272,7 +274,11 @@ export class StatuslineGenerator {
     return `${c.brightPurple}CF-V3${c.reset} ${c.dim}|${c.reset} ` +
       `${c.cyan}D:${data.v3Progress.domainsCompleted}/${data.v3Progress.totalDomains}${c.reset} ${c.dim}|${c.reset} ` +
       `${c.yellow}S:${swarmIndicator}${data.swarm.activeAgents}/${data.swarm.maxAgents}${c.reset} ${c.dim}|${c.reset} ` +
-      `${data.security.status === 'CLEAN' ? c.green : c.red}CVE:${securityStatus}${data.security.cvesFixed}/${data.security.totalCves}${c.reset} ${c.dim}|${c.reset} ` +
+      `${data.security.status === 'CLEAN' ? c.green : c.red}` +
+      (data.security.findings !== undefined
+        ? `Findings:${data.security.findings}`
+        : `CVE:${securityStatus}${data.security.cvesFixed}/${data.security.totalCves}`) +
+      `${c.reset} ${c.dim}|${c.reset} ` +
       `${c.dim}🧠${data.system.intelligencePct}%${c.reset}`;
   }
 
@@ -346,7 +352,9 @@ export class StatuslineGenerator {
       `${c.brightYellow}🤖${c.reset}                        ` +  // 24 spaces after emoji (2+24=26)
       `${swarmIndicator} [${agentsColor}${agentDisplay}${c.reset}/${c.brightWhite}${data.swarm.maxAgents}${c.reset}]  ` +
       `${subAgentColor}👥 ${data.system.subAgents}${c.reset}    ` +
-      `${securityIcon} ${securityColor}CVE ${data.security.cvesFixed}${c.reset}/${c.brightWhite}${data.security.totalCves}${c.reset}    ` +
+      (data.security.findings !== undefined
+        ? `${securityIcon} ${securityColor}Findings ${data.security.findings}${c.reset}    `
+        : `${securityIcon} ${securityColor}CVE ${data.security.cvesFixed}${c.reset}/${c.brightWhite}${data.security.totalCves}${c.reset}    `) +
       `${memoryColor}💾 ${memoryDisplay}${c.reset}    ` +
       `${c.dim}🧠 ${intelDisplay}%${c.reset}`
     );

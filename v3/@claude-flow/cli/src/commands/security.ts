@@ -898,7 +898,7 @@ const defendCommand: Command = {
       createAIDefence = aidefence.createAIDefence;
     } catch {
       output.printError('AIDefence package not installed', 'Run: npm install @claude-flow/aidefence');
-      return { success: false, message: 'AIDefence not available' };
+      return { success: false, exitCode: 2, message: 'AIDefence not available' };
     }
 
     const defender = createAIDefence({ enableLearning });
@@ -926,7 +926,7 @@ const defendCommand: Command = {
         output.writeln(output.dim(`Reading file: ${filePath}`));
       } catch (err) {
         output.printError(`Failed to read file: ${filePath}`);
-        return { success: false, message: 'File not found' };
+        return { success: false, exitCode: 2, message: 'File not found' };
       }
     }
 
@@ -949,8 +949,9 @@ const defendCommand: Command = {
 
     // Perform scan
     const startTime = performance.now();
-    const result = quickMode
-      ? { ...defender.quickScan(textToScan), threats: [], piiFound: false, detectionTimeMs: 0, inputHash: '', safe: !defender.quickScan(textToScan).threat }
+    const quickResult = quickMode ? defender.quickScan(textToScan) : undefined;
+    const result = quickResult
+      ? { ...quickResult, threats: [], piiFound: false, detectionTimeMs: 0, inputHash: '', safe: !quickResult.threat }
       : await defender.detect(textToScan);
     const scanTime = performance.now() - startTime;
 
@@ -964,7 +965,8 @@ const defendCommand: Command = {
         piiFound: result.piiFound,
         detectionTimeMs: scanTime,
       }, null, 2));
-      return { success: true };
+      const safe = result.safe && !result.piiFound;
+      return { success: safe, exitCode: safe ? 0 : 1 };
     }
 
     // Text output
@@ -1013,7 +1015,8 @@ const defendCommand: Command = {
 
     output.writeln(output.dim(`Detection time: ${scanTime.toFixed(3)}ms`));
 
-    return { success: result.safe };
+    const safe = result.safe && !result.piiFound;
+    return { success: safe, exitCode: safe ? 0 : 1 };
   },
 };
 
